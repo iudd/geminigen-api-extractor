@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         MindVideo API Extractor
 // @namespace    http://tampermonkey.net/
-// @version      2.4.0
-// @description  Extract API information and token from mindvideo.ai for curl/API usage - Fixed Mobile Clipboard + Enhanced Copy
+// @version      2.5.0
+// @description  Extract API information and token from mindvideo.ai for curl/API usage - Mobile Copy Fixed
 // @author       iudd
 // @match        https://www.mindvideo.ai/*
 // @match        https://mindvideo.ai/*
@@ -15,7 +15,7 @@
 (function() {
     'use strict';
 
-    // 添加样式
+    // 添加样式 - 增加移动端复制提示
     GM_addStyle(`
         .mindvideo-panel {
             position: fixed;
@@ -170,6 +170,22 @@
             color: #ffb74d;
             font-weight: bold;
         }
+        .copy-result {
+            background: rgba(0, 255, 0, 0.1);
+            border: 2px solid #4CAF50;
+            padding: 10px;
+            border-radius: 6px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            word-break: break-all;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .copy-result.error {
+            background: rgba(255, 0, 0, 0.1);
+            border-color: #f44336;
+        }
     `);
 
     // 全局变量
@@ -180,6 +196,7 @@
     let originalXHR = null;
     let isInterceptionActive = false;
     let isCleared = false;
+    let copyResultDiv = null; // 新增：复制结果显示区域
 
     // 提取页面信息
     function extractPageInfo() {
@@ -245,23 +262,62 @@
         return tokens;
     }
 
-    // 增强复制功能 - 移动端兼容
+    // 移动端优化复制功能 - 优先显示内容让用户手动复制
     async function copyToClipboard(text, btn = null) {
-        console.log('复制数据:', text.substring(0, 100) + '...'); // 调试
+        console.log('🔄 复制数据长度:', text.length, '预览:', text.substring(0, 50) + '...');
 
-        // 方法1: GM_setClipboard (Tampermonkey)
-        if (typeof GM_setClipboard === 'function') {
-            GM_setClipboard(text);
-            showNotification('✅ 已复制到剪贴板！');
-            if (btn) btn.textContent = '已复制 ✓';
-            return true;
+        // 创建复制结果显示区域
+        if (!copyResultDiv) {
+            copyResultDiv = document.createElement('div');
+            copyResultDiv.className = 'copy-result';
+            copyResultDiv.style.cssText = `
+                position: fixed;
+                top: 60px;
+                left: 20px;
+                right: 20px;
+                background: rgba(0, 0, 0, 0.9);
+                color: #4CAF50;
+                padding: 15px;
+                border-radius: 8px;
+                z-index: 10003;
+                font-family: monospace;
+                font-size: 12px;
+                word-break: break-all;
+                max-height: 200px;
+                overflow-y: auto;
+                border: 2px solid #4CAF50;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+                display: none;
+            `;
+            document.body.appendChild(copyResultDiv);
         }
 
-        // 方法2: navigator.clipboard (现代浏览器)
+        // 显示复制内容
+        copyResultDiv.textContent = `📋 复制内容 (长按下方区域全选复制):\n\n${text}`;
+        copyResultDiv.style.display = 'block';
+
+        // 自动隐藏
+        setTimeout(() => {
+            if (copyResultDiv) copyResultDiv.style.display = 'none';
+        }, 10000);
+
+        // 方法1: 尝试GM_setClipboard (Tampermonkey)
+        if (typeof GM_setClipboard === 'function') {
+            try {
+                GM_setClipboard(text);
+                showNotification('✅ GM_setClipboard成功！也可手动长按上方绿色区域复制');
+                if (btn) btn.textContent = '已复制 ✓';
+                return true;
+            } catch (e) {
+                console.log('GM_setClipboard失败:', e);
+            }
+        }
+
+        // 方法2: 尝试navigator.clipboard
         if (navigator.clipboard && navigator.clipboard.writeText) {
             try {
                 await navigator.clipboard.writeText(text);
-                showNotification('✅ 已复制到剪贴板！');
+                showNotification('✅ Clipboard API成功！也可手动长按上方绿色区域复制');
                 if (btn) btn.textContent = '已复制 ✓';
                 return true;
             } catch (e) {
@@ -269,22 +325,24 @@
             }
         }
 
-        // 方法3: textarea execCommand (兼容性)
+        // 方法3: textarea + execCommand (最后的尝试)
         try {
             const ta = document.createElement('textarea');
             ta.value = text;
             ta.style.position = 'fixed';
-            ta.style.left = '-999999px';
-            ta.style.top = '-999999px';
+            ta.style.left = '-9999px';
+            ta.style.top = '-9999px';
             ta.style.opacity = 0;
+            ta.style.width = '1px';
+            ta.style.height = '1px';
             document.body.appendChild(ta);
             ta.focus();
             ta.select();
-            ta.setSelectionRange(0, 99999); // 移动端优化
-            const successful = document.execCommand('copy');
+            ta.setSelectionRange(0, 99999);
+            const success = document.execCommand('copy');
             document.body.removeChild(ta);
-            if (successful) {
-                showNotification('✅ 已复制到剪贴板！');
+            if (success) {
+                showNotification('✅ execCommand成功！也可手动长按上方绿色区域复制');
                 if (btn) btn.textContent = '已复制 ✓';
                 return true;
             }
@@ -292,17 +350,96 @@
             console.log('execCommand失败:', e);
         }
 
-        // 方法4: 提示框手动复制 (终极兼容)
-        const copied = prompt('请手动复制以下内容:', text);
-        if (copied !== null) {
-            showNotification('📋 已选中，请长按粘贴！');
-            if (btn) btn.textContent = '手动复制 ✓';
-            return true;
-        }
-
-        showNotification('❌ 复制失败，请重试');
-        if (btn) btn.textContent = '复制失败';
+        // 所有方法都失败 - 只显示绿色区域让用户手动复制
+        showNotification('📱 请长按上方绿色区域全选复制！');
+        if (btn) btn.textContent = '请手动复制';
         return false;
+    }
+
+    // 通知
+    function showNotification(msg, isError = false) {
+        const div = document.createElement('div');
+        div.textContent = msg;
+        div.className = `notification ${isError ? 'error' : ''}`;
+        div.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: ${isError ? '#f44336' : '#4CAF50'};
+            color: white;
+            padding: 12px 20px;
+            border-radius: 6px;
+            z-index: 10002;
+            font-weight: bold;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            font-size: 14px;
+            max-width: 300px;
+        `;
+        document.body.appendChild(div);
+        setTimeout(() => div.remove(), 3000);
+    }
+
+    // 拦截网络请求
+    function startInterception() {
+        if (isInterceptionActive) return;
+        isInterceptionActive = true;
+
+        originalFetch = window.fetch;
+        window.fetch = async function(...args) {
+            const [url, options = {}] = args;
+            const urlStr = typeof url === 'string' ? url : url.href;
+            const method = options.method || 'GET';
+            const headers = options.headers || {};
+            let bodyStr = null;
+
+            if (options.body) {
+                if (typeof options.body === 'string') bodyStr = options.body;
+                else if (options.body.text) bodyStr = await options.body.text();
+            }
+
+            if (urlStr.includes('mindvideo.ai') || urlStr.includes('mindvideo')) {
+                const requestInfo = {
+                    method,
+                    url: urlStr,
+                    headers: { ...headers },
+                    body: bodyStr,
+                    timestamp: new Date().toLocaleString()
+                };
+
+                Object.keys(headers).forEach(key => {
+                    const value = headers[key];
+                    if (value && (
+                        value.includes('Bearer ') ||
+                        key.toLowerCase().includes('token') ||
+                        key.toLowerCase().includes('auth') ||
+                        key.toLowerCase().includes('session') ||
+                        value.includes('eyJ') ||
+                        value.match(/[!#\$%^&*]{2,}/)
+                    )) {
+                        capturedTokens.push({
+                            source: 'Header',
+                            key,
+                            value: value.substring(0, 50) + '...',
+                            full: value,
+                            url: urlStr,
+                            timestamp: new Date().toLocaleString()
+                        });
+                    }
+                });
+
+                capturedRequests.push(requestInfo);
+                updatePanel();
+            }
+
+            return originalFetch.apply(this, args);
+        };
+    }
+
+    // 停止拦截
+    function stopInterception() {
+        if (!isInterceptionActive) return;
+        isInterceptionActive = false;
+        if (originalFetch) window.fetch = originalFetch;
     }
 
     // 按钮事件处理
@@ -349,19 +486,14 @@
                 showNotification('🔄 已刷新面板');
                 btn.classList.remove('copying');
                 break;
-            default:
-                console.log('未知动作:', action);
-                btn.classList.remove('copying');
         }
     }
 
-    // 添加事件监听 (移动端+桌面)
+    // 添加事件监听
     function addButtonListeners() {
         if (!currentPanel) return;
         const container = currentPanel;
-        container.removeEventListener('click', handleButtonClick);
-        container.removeEventListener('touchend', handleButtonClick);
-        container.addEventListener('click', handleButtonClick);
+        container.addEventListener('click', handleButtonClick, true);
         container.addEventListener('touchend', handleButtonClick, { passive: false });
     }
 
@@ -376,8 +508,8 @@
 
         let html = `
             <div class="panel-header">
-                🎯 MindVideo API提取器 v2.4
-                <button class="close-btn" onclick="this.closest('.mindvideo-panel').remove();">×</button>
+                🎯 MindVideo API提取器 v2.5
+                <button class="close-btn" onclick="this.closest('.mindvideo-panel').remove();stopInterception();">×</button>
             </div>
         `;
 
@@ -454,103 +586,6 @@
         isCleared = false;
     }
 
-    // 其他函数保持不变...
-    function startInterception() {
-        if (isInterceptionActive) return;
-        isInterceptionActive = true;
-
-        originalFetch = window.fetch;
-        window.fetch = async function(...args) {
-            const [url, options = {}] = args;
-            const urlStr = typeof url === 'string' ? url : url.href;
-            const method = options.method || 'GET';
-            const headers = options.headers || {};
-            let bodyStr = null;
-
-            if (options.body) {
-                if (typeof options.body === 'string') bodyStr = options.body;
-                else if (options.body.text) bodyStr = await options.body.text();
-            }
-
-            if (urlStr.includes('mindvideo.ai') || urlStr.includes('mindvideo')) {
-                const requestInfo = {
-                    method,
-                    url: urlStr,
-                    headers: { ...headers },
-                    body: bodyStr,
-                    timestamp: new Date().toLocaleString()
-                };
-
-                Object.keys(headers).forEach(key => {
-                    const value = headers[key];
-                    if (value && (
-                        value.includes('Bearer ') ||
-                        key.toLowerCase().includes('token') ||
-                        key.toLowerCase().includes('auth') ||
-                        key.toLowerCase().includes('session') ||
-                        value.includes('eyJ') ||
-                        value.match(/[!#\$%^&*]{2,}/)
-                    )) {
-                        capturedTokens.push({
-                            source: 'Header',
-                            key,
-                            value: value.substring(0, 50) + '...',
-                            full: value,
-                            url: urlStr,
-                            timestamp: new Date().toLocaleString()
-                        });
-                    }
-                });
-
-                capturedRequests.push(requestInfo);
-                updatePanel();
-            }
-
-            return originalFetch.apply(this, args);
-        };
-
-        // XHR拦截 (简化版)
-        if (window.XMLHttpRequest) {
-            originalXHR = window.XMLHttpRequest;
-            window.XMLHttpRequest = function() {
-                const xhr = new originalXHR();
-                const originalOpen = xhr.open;
-                xhr.open = function(method, url) {
-                    if (url.includes('mindvideo')) {
-                        // Token捕获逻辑类似fetch
-                    }
-                    originalOpen.apply(this, arguments);
-                };
-                return xhr;
-            };
-        }
-    }
-
-    function stopInterception() {
-        if (!isInterceptionActive) return;
-        isInterceptionActive = false;
-        if (originalFetch) window.fetch = originalFetch;
-        if (originalXHR) window.XMLHttpRequest = originalXHR;
-        console.log('拦截已停止');
-    }
-
-    function generateCurl(request) {
-        let curl = `curl -X ${request.method} "${request.url}"`;
-        Object.entries(request.headers || {}).forEach(([key, value]) => {
-            curl += ` \\\n  -H "${key}: ${value}"`;
-        });
-        if (request.body) curl += ` \\\n  -d '${request.body.replace(/'/g, "'\\''")}'`;
-        return curl;
-    }
-
-    function showNotification(msg) {
-        const div = document.createElement('div');
-        div.textContent = msg;
-        div.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#4CAF50;color:white;padding:12px;border-radius:6px;z-index:10002;font-weight:bold;box-shadow:0 4px 12px rgba(0,0,0,0.3);font-size:14px;';
-        document.body.appendChild(div);
-        setTimeout(() => div.remove(), 2500);
-    }
-
     // 创建面板
     function createPanel() {
         if (currentPanel) {
@@ -572,11 +607,11 @@
     const toggleBtn = document.createElement('button');
     toggleBtn.className = 'toggle-btn';
     toggleBtn.innerHTML = '🎨';
-    toggleBtn.title = 'MindVideo API提取器 v2.4 - 移动端复制修复';
+    toggleBtn.title = 'MindVideo API提取器 v2.5 - 移动端复制优化';
     toggleBtn.onclick = createPanel;
     toggleBtn.addEventListener('touchstart', createPanel, { passive: false });
     document.body.appendChild(toggleBtn);
 
-    console.log('🎨 MindVideo API提取器 v2.4 已加载 - 移动端剪贴板修复');
+    console.log('🎨 MindVideo API提取器 v2.5 已加载 - 移动端复制优化 + 绿色区域显示');
     window.mindvideoDebug = { update: updatePanel, copy: copyToClipboard };
 })();
