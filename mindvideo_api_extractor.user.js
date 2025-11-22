@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         MindVideo API Extractor
 // @namespace    http://tampermonkey.net/
-// @version      2.5.0
-// @description  Extract API information and token from mindvideo.ai refresh API - Mobile Enhanced + Refresh Focus
+// @version      2.5.1
+// @description  Extract API information and token from mindvideo.ai refresh API - Enhanced Refresh Token Detection
 // @author       iudd
 // @match        https://www.mindvideo.ai/*
 // @match        https://mindvideo.ai/*
@@ -21,7 +21,7 @@
             position: fixed;
             top: 20px;
             right: 20px;
-            width: 540px;
+            width: 550px;
             max-height: 85vh;
             background: rgba(0, 0, 0, 0.95);
             color: white;
@@ -172,6 +172,11 @@
             background: rgba(255, 193, 7, 0.1);
             border-color: #ffc107;
         }
+        .refresh-section {
+            background: rgba(33, 150, 243, 0.1);
+            border-color: #2196F3;
+            border-left: 4px solid #2196F3;
+        }
         .no-data {
             color: #888;
             font-style: italic;
@@ -228,6 +233,27 @@
             margin-bottom: 10px;
             font-weight: bold;
         }
+        .token-count {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4CAF50;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 8px;
+        }
+        .instruction {
+            background: rgba(255, 193, 7, 0.1);
+            border: 1px solid #ffc107;
+            border-radius: 6px;
+            padding: 10px;
+            margin: 10px 0;
+            color: #ffeb3b;
+            font-size: 12px;
+        }
+        .instruction strong {
+            color: #ffc107;
+        }
     `);
 
     // 全局变量
@@ -278,7 +304,7 @@
         return links;
     }
 
-    // 提取Storage中的Token
+    // 提取Storage中的Token - 增强版
     function extractFromStorage() {
         const tokens = [];
         Object.keys(localStorage).forEach(key => {
@@ -404,11 +430,11 @@
         setTimeout(() => div.remove(), 4000);
     }
 
-    // 拦截网络请求 - 专门针对refresh接口
+    // 拦截网络请求 - 专门针对refresh接口增强版
     function startInterception() {
         if (isInterceptionActive) return;
         isInterceptionActive = true;
-        console.log('🕸️ 开始拦截MindVideo请求，重点关注refresh接口...');
+        console.log('🕸️ 开始拦截MindVideo请求，重点关注refresh/creations接口...');
 
         originalFetch = window.fetch;
         window.fetch = async function(...args) {
@@ -423,7 +449,7 @@
                 else if (options.body.text) bodyStr = await options.body.text();
             }
 
-            // 重点捕获MindVideo相关请求，特别是refresh
+            // 重点捕获MindVideo相关请求，特别是refresh/creations
             if (urlStr.includes('mindvideo.ai') || urlStr.includes('mindvideo')) {
                 const requestInfo = {
                     method,
@@ -431,10 +457,10 @@
                     headers: { ...headers },
                     body: bodyStr,
                     timestamp: new Date().toLocaleString(),
-                    isRefresh: urlStr.includes('refresh') || urlStr.includes('creations')
+                    isRefresh: urlStr.includes('refresh') || urlStr.includes('creations') || urlStr.includes('/api/v2/')
                 };
 
-                // 增强Token捕获 - 所有可能的header
+                // 增强Token捕获 - 所有可能的header和值
                 Object.keys(headers).forEach(key => {
                     const value = headers[key];
                     if (value && (
@@ -443,9 +469,11 @@
                         key.toLowerCase().includes('auth') ||
                         key.toLowerCase().includes('session') ||
                         key.toLowerCase().includes('x-auth') ||
+                        key.toLowerCase().includes('authorization') ||
                         value.includes('eyJ') ||
                         value.match(/[!#\$%^&*]{2,}/) ||
-                        value.length > 20 // 长字符串可能是Token
+                        value.length > 20 || // 长字符串可能是Token
+                        value.match(/^[A-Za-z0-9+/=]{20,}$/) // Base64格式
                     )) {
                         const tokenInfo = {
                             source: 'Header',
@@ -462,7 +490,7 @@
                         // 专门存储refresh接口的Token
                         if (requestInfo.isRefresh) {
                             refreshTokens.push(tokenInfo);
-                            console.log('🎯 捕获到Refresh接口Token:', value.substring(0, 20) + '...');
+                            console.log('🎯 捕获到Refresh/Creations接口Token:', key, '=', value.substring(0, 20) + '...');
                         }
                     }
                 });
@@ -483,13 +511,13 @@
 
                 const originalOpen = xhr.open;
                 xhr.open = function(method, url, ...args) {
-                    if (url && (url.includes('mindvideo') || url.includes('refresh'))) {
+                    if (url && (url.includes('mindvideo') || url.includes('refresh') || url.includes('creations'))) {
                         requestInfo = {
                             method,
                             url,
                             headers: {},
                             timestamp: new Date().toLocaleString(),
-                            isRefresh: url.includes('refresh') || url.includes('creations')
+                            isRefresh: url.includes('refresh') || url.includes('creations') || url.includes('/api/v2/')
                         };
                     }
                     originalOpen.apply(this, arguments);
@@ -505,8 +533,11 @@
                             value.includes('Bearer ') ||
                             key.toLowerCase().includes('token') ||
                             key.toLowerCase().includes('auth') ||
+                            key.toLowerCase().includes('authorization') ||
                             value.includes('eyJ') ||
-                            value.match(/[!#\$%^&*]{2,}/)
+                            value.match(/[!#\$%^&*]{2,}/) ||
+                            value.length > 20 ||
+                            value.match(/^[A-Za-z0-9+/=]{20,}$/)
                         )) {
                             const tokenInfo = {
                                 source: 'XHR Header',
@@ -521,7 +552,7 @@
                             capturedTokens.push(tokenInfo);
                             if (requestInfo.isRefresh) {
                                 refreshTokens.push(tokenInfo);
-                                console.log('🎯 XHR捕获到Refresh接口Token:', value.substring(0, 20) + '...');
+                                console.log('🎯 XHR捕获到Refresh接口Token:', key, '=', value.substring(0, 20) + '...');
                             }
                         }
                     }
@@ -639,8 +670,16 @@
 
         let html = `
             <div class="panel-header">
-                🎯 MindVideo API提取器 v2.5
+                🎯 MindVideo API提取器 v2.5.1
                 <button class="close-btn" onclick="this.closest('.mindvideo-panel').remove();stopInterception();">×</button>
+            </div>
+
+            <div class="instruction">
+                <strong>📋 Token获取步骤：</strong><br>
+                1. 访问 https://www.mindvideo.ai/zh/text-to-image/<br>
+                2. 登录账号，输入提示词<br>
+                3. 点击"生成"按钮<br>
+                4. 等待脚本自动捕获Refresh接口的Token
             </div>
         `;
 
@@ -654,15 +693,15 @@
 
         // 重点显示Refresh Token
         html += `
-            <div class="panel-section storage-section">
-                <h4>🔑 Refresh Token (${refreshTokens.length}) - 重点关注</h4>
+            <div class="panel-section refresh-section">
+                <h4>🔑 Refresh Token (${refreshTokens.length}) <span class="token-count">重点</span></h4>
                 <div class="info-content">
                     ${refreshTokens.length > 0 ? refreshTokens.slice(-8).map(t => `
                         <div class="refresh-highlight">
                             <strong>${t.source}:</strong> <span class="token-highlight">${t.value}</span><br>
                             <small>🔄 Refresh接口 | ${t.key} | ${t.timestamp}</small>
                         </div>
-                    `).join('') : '<div class="no-data">暂无Refresh Token<br>请点击"生成"触发refresh/creations接口</div>'}
+                    `).join('') : '<div class="no-data">暂无Refresh Token<br>请点击"生成"触发refresh/creations接口<br>脚本会自动捕获所有Token</div>'}
                 </div>
                 ${refreshTokens.length > 0 ? '<button class="copy-btn" data-action="copy-refresh-tokens">复制Refresh Token</button>' : ''}
                 ${allTokens.length > 0 ? '<button class="copy-btn" data-action="copy-tokens">复制所有Token</button>' : ''}
@@ -740,11 +779,11 @@
     const toggleBtn = document.createElement('button');
     toggleBtn.className = 'toggle-btn';
     toggleBtn.innerHTML = '🎨';
-    toggleBtn.title = 'MindVideo API提取器 v2.5 - Refresh接口重点监控';
+    toggleBtn.title = 'MindVideo API提取器 v2.5.1 - Refresh接口Token重点监控';
     toggleBtn.onclick = createPanel;
     toggleBtn.addEventListener('touchstart', createPanel, { passive: false });
     document.body.appendChild(toggleBtn);
 
-    console.log('🎨 MindVideo API提取器 v2.5 已加载 - Refresh接口Token重点提取 + 移动端复制增强');
+    console.log('🎨 MindVideo API提取器 v2.5.1 已加载 - Refresh接口Token重点提取 + 移动端复制增强');
     window.mindvideoDebug = { update: updatePanel, copy: copyToClipboard, tokens: () => refreshTokens };
 })();
