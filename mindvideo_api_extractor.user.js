@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         MindVideo API Extractor
 // @namespace    http://tampermonkey.net/
-// @version      2.5.1
-// @description  Extract API information and token from mindvideo.ai refresh API - Enhanced Refresh Token Detection
+// @version      2.5.2
+// @description  Extract API information and token from mindvideo.ai - Enhanced Creation/Refresh Detection + All Headers
 // @author       iudd
 // @match        https://www.mindvideo.ai/*
 // @match        https://mindvideo.ai/*
@@ -21,7 +21,7 @@
             position: fixed;
             top: 20px;
             right: 20px;
-            width: 550px;
+            width: 560px;
             max-height: 85vh;
             background: rgba(0, 0, 0, 0.95);
             color: white;
@@ -177,6 +177,11 @@
             border-color: #2196F3;
             border-left: 4px solid #2196F3;
         }
+        .creation-section {
+            background: rgba(76, 175, 80, 0.1);
+            border-color: #4CAF50;
+            border-left: 4px solid #4CAF50;
+        }
         .no-data {
             color: #888;
             font-style: italic;
@@ -202,6 +207,12 @@
         .refresh-highlight {
             background: rgba(33, 150, 243, 0.2);
             border-left: 3px solid #2196F3;
+            padding: 8px;
+            margin: 5px 0;
+        }
+        .creation-highlight {
+            background: rgba(76, 175, 80, 0.2);
+            border-left: 3px solid #4CAF50;
             padding: 8px;
             margin: 5px 0;
         }
@@ -254,6 +265,15 @@
         .instruction strong {
             color: #ffc107;
         }
+        .debug-info {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid #666;
+            border-radius: 4px;
+            padding: 8px;
+            margin: 8px 0;
+            font-size: 11px;
+            color: #ccc;
+        }
     `);
 
     // 全局变量
@@ -261,6 +281,8 @@
     let capturedRequests = [];
     let capturedTokens = [];
     let refreshTokens = []; // 专门存储refresh接口的Token
+    let creationTokens = []; // 专门存储creation接口的Token
+    let allHeaders = []; // 存储所有捕获的headers
     let originalFetch = null;
     let originalXHR = null;
     let isInterceptionActive = false;
@@ -430,11 +452,11 @@
         setTimeout(() => div.remove(), 4000);
     }
 
-    // 拦截网络请求 - 专门针对refresh接口增强版
+    // 拦截网络请求 - 专门针对creation/refresh接口增强版
     function startInterception() {
         if (isInterceptionActive) return;
         isInterceptionActive = true;
-        console.log('🕸️ 开始拦截MindVideo请求，重点关注refresh/creations接口...');
+        console.log('🕸️ 开始拦截MindVideo请求，重点关注creation/refresh接口...');
 
         originalFetch = window.fetch;
         window.fetch = async function(...args) {
@@ -449,7 +471,7 @@
                 else if (options.body.text) bodyStr = await options.body.text();
             }
 
-            // 重点捕获MindVideo相关请求，特别是refresh/creations
+            // 重点捕获MindVideo相关请求，特别是creation/refresh
             if (urlStr.includes('mindvideo.ai') || urlStr.includes('mindvideo')) {
                 const requestInfo = {
                     method,
@@ -457,13 +479,24 @@
                     headers: { ...headers },
                     body: bodyStr,
                     timestamp: new Date().toLocaleString(),
-                    isRefresh: urlStr.includes('refresh') || urlStr.includes('creations') || urlStr.includes('/api/v2/')
+                    isCreation: urlStr.includes('creation') || urlStr.includes('/api/v2/creations'),
+                    isRefresh: urlStr.includes('refresh') || urlStr.includes('/api/v2/refresh')
                 };
+
+                // 捕获所有headers
+                allHeaders.push({
+                    url: urlStr,
+                    method,
+                    headers: { ...headers },
+                    timestamp: new Date().toLocaleString(),
+                    isCreation: requestInfo.isCreation,
+                    isRefresh: requestInfo.isRefresh
+                });
 
                 // 增强Token捕获 - 所有可能的header和值
                 Object.keys(headers).forEach(key => {
                     const value = headers[key];
-                    if (value && (
+                    const isTokenLike = value && (
                         value.includes('Bearer ') ||
                         key.toLowerCase().includes('token') ||
                         key.toLowerCase().includes('auth') ||
@@ -472,25 +505,34 @@
                         key.toLowerCase().includes('authorization') ||
                         value.includes('eyJ') ||
                         value.match(/[!#\$%^&*]{2,}/) ||
-                        value.length > 20 || // 长字符串可能是Token
-                        value.match(/^[A-Za-z0-9+/=]{20,}$/) // Base64格式
-                    )) {
+                        value.length > 20 ||
+                        value.match(/^[A-Za-z0-9+/=]{20,}$/)
+                    );
+
+                    if (isTokenLike) {
                         const tokenInfo = {
                             source: 'Header',
                             key,
                             value: value.substring(0, 50) + '...',
                             full: value,
                             url: urlStr,
+                            isCreation: requestInfo.isCreation,
                             isRefresh: requestInfo.isRefresh,
                             timestamp: new Date().toLocaleString()
                         };
 
                         capturedTokens.push(tokenInfo);
 
+                        // 专门存储creation接口的Token
+                        if (requestInfo.isCreation) {
+                            creationTokens.push(tokenInfo);
+                            console.log('🎯 捕获到Creation接口Token:', key, '=', value.substring(0, 20) + '...');
+                        }
+
                         // 专门存储refresh接口的Token
                         if (requestInfo.isRefresh) {
                             refreshTokens.push(tokenInfo);
-                            console.log('🎯 捕获到Refresh/Creations接口Token:', key, '=', value.substring(0, 20) + '...');
+                            console.log('🎯 捕获到Refresh接口Token:', key, '=', value.substring(0, 20) + '...');
                         }
                     }
                 });
@@ -502,7 +544,7 @@
             return originalFetch.apply(this, args);
         };
 
-        // XHR拦截 - 也重点关注refresh
+        // XHR拦截 - 也重点关注creation/refresh
         if (window.XMLHttpRequest) {
             originalXHR = window.XMLHttpRequest;
             window.XMLHttpRequest = function() {
@@ -511,13 +553,14 @@
 
                 const originalOpen = xhr.open;
                 xhr.open = function(method, url, ...args) {
-                    if (url && (url.includes('mindvideo') || url.includes('refresh') || url.includes('creations'))) {
+                    if (url && (url.includes('mindvideo') || url.includes('creation') || url.includes('refresh'))) {
                         requestInfo = {
                             method,
                             url,
                             headers: {},
                             timestamp: new Date().toLocaleString(),
-                            isRefresh: url.includes('refresh') || url.includes('creations') || url.includes('/api/v2/')
+                            isCreation: url.includes('creation') || url.includes('/api/v2/creations'),
+                            isRefresh: url.includes('refresh') || url.includes('/api/v2/refresh')
                         };
                     }
                     originalOpen.apply(this, arguments);
@@ -529,7 +572,7 @@
                         requestInfo.headers[key] = value;
 
                         // XHR中也捕获Token
-                        if (value && (
+                        const isTokenLike = value && (
                             value.includes('Bearer ') ||
                             key.toLowerCase().includes('token') ||
                             key.toLowerCase().includes('auth') ||
@@ -538,18 +581,25 @@
                             value.match(/[!#\$%^&*]{2,}/) ||
                             value.length > 20 ||
                             value.match(/^[A-Za-z0-9+/=]{20,}$/)
-                        )) {
+                        );
+
+                        if (isTokenLike) {
                             const tokenInfo = {
                                 source: 'XHR Header',
                                 key,
                                 value: value.substring(0, 50) + '...',
                                 full: value,
                                 url: requestInfo.url,
+                                isCreation: requestInfo.isCreation,
                                 isRefresh: requestInfo.isRefresh,
                                 timestamp: new Date().toLocaleString()
                             };
 
                             capturedTokens.push(tokenInfo);
+                            if (requestInfo.isCreation) {
+                                creationTokens.push(tokenInfo);
+                                console.log('🎯 XHR捕获到Creation接口Token:', key, '=', value.substring(0, 20) + '...');
+                            }
                             if (requestInfo.isRefresh) {
                                 refreshTokens.push(tokenInfo);
                                 console.log('🎯 XHR捕获到Refresh接口Token:', key, '=', value.substring(0, 20) + '...');
@@ -618,9 +668,19 @@
                 description = '所有Token';
                 copyToClipboard(text, btn, description);
                 break;
+            case 'copy-creation-tokens':
+                text = creationTokens.map(t => `${t.source}.${t.key}:\n${t.full}\n`).join('\n\n');
+                description = 'Creation Token';
+                copyToClipboard(text, btn, description);
+                break;
             case 'copy-refresh-tokens':
                 text = refreshTokens.map(t => `${t.source}.${t.key}:\n${t.full}\n`).join('\n\n');
                 description = 'Refresh Token';
+                copyToClipboard(text, btn, description);
+                break;
+            case 'copy-all-headers':
+                text = allHeaders.map(h => `URL: ${h.url}\nMethod: ${h.method}\nHeaders:\n${JSON.stringify(h.headers, null, 2)}\n`).join('\n---\n');
+                description = '所有Headers';
                 copyToClipboard(text, btn, description);
                 break;
             case 'copy-requests':
@@ -637,6 +697,8 @@
                 capturedRequests = [];
                 capturedTokens = [];
                 refreshTokens = [];
+                creationTokens = [];
+                allHeaders = [];
                 isCleared = true;
                 console.log('清空成功');
                 showNotification('✅ 已清空所有数据！\n重新生成查看新数据');
@@ -670,7 +732,7 @@
 
         let html = `
             <div class="panel-header">
-                🎯 MindVideo API提取器 v2.5.1
+                🎯 MindVideo API提取器 v2.5.2
                 <button class="close-btn" onclick="this.closest('.mindvideo-panel').remove();stopInterception();">×</button>
             </div>
 
@@ -679,7 +741,11 @@
                 1. 访问 https://www.mindvideo.ai/zh/text-to-image/<br>
                 2. 登录账号，输入提示词<br>
                 3. 点击"生成"按钮<br>
-                4. 等待脚本自动捕获Refresh接口的Token
+                4. 脚本自动捕获Creation/Refresh接口的所有Token
+            </div>
+
+            <div class="debug-info">
+                调试信息: 请求数=${capturedRequests.length}, Token数=${allTokens.length}, Headers数=${allHeaders.length}
             </div>
         `;
 
@@ -691,20 +757,50 @@
             </div>
         `;
 
-        // 重点显示Refresh Token
+        // Creation Token 专门区域
+        html += `
+            <div class="panel-section creation-section">
+                <h4>🔑 Creation Token (${creationTokens.length}) <span class="token-count">重点</span></h4>
+                <div class="info-content">
+                    ${creationTokens.length > 0 ? creationTokens.slice(-8).map(t => `
+                        <div class="creation-highlight">
+                            <strong>${t.source}:</strong> <span class="token-highlight">${t.value}</span><br>
+                            <small>🆕 Creation接口 | ${t.key} | ${t.timestamp}</small>
+                        </div>
+                    `).join('') : '<div class="no-data">暂无Creation Token<br>请点击"生成"触发creation接口<br>脚本会自动捕获所有Token</div>'}
+                </div>
+                ${creationTokens.length > 0 ? '<button class="copy-btn" data-action="copy-creation-tokens">复制Creation Token</button>' : ''}
+            </div>
+        `;
+
+        // Refresh Token 区域
         html += `
             <div class="panel-section refresh-section">
-                <h4>🔑 Refresh Token (${refreshTokens.length}) <span class="token-count">重点</span></h4>
+                <h4>🔄 Refresh Token (${refreshTokens.length})</h4>
                 <div class="info-content">
                     ${refreshTokens.length > 0 ? refreshTokens.slice(-8).map(t => `
                         <div class="refresh-highlight">
                             <strong>${t.source}:</strong> <span class="token-highlight">${t.value}</span><br>
                             <small>🔄 Refresh接口 | ${t.key} | ${t.timestamp}</small>
                         </div>
-                    `).join('') : '<div class="no-data">暂无Refresh Token<br>请点击"生成"触发refresh/creations接口<br>脚本会自动捕获所有Token</div>'}
+                    `).join('') : '<div class="no-data">暂无Refresh Token<br>请等待生成完成触发refresh接口</div>'}
                 </div>
                 ${refreshTokens.length > 0 ? '<button class="copy-btn" data-action="copy-refresh-tokens">复制Refresh Token</button>' : ''}
-                ${allTokens.length > 0 ? '<button class="copy-btn" data-action="copy-tokens">复制所有Token</button>' : ''}
+            </div>
+        `;
+
+        html += `
+            <div class="panel-section storage-section">
+                <h4>📦 所有Token (${allTokens.length})</h4>
+                <div class="info-content">
+                    ${allTokens.length > 0 ? allTokens.slice(-5).map(t => `
+                        <div>
+                            <strong>${t.source}:</strong> <span class="token-highlight">${t.value}</span><br>
+                            <small>${t.key} | ${t.url?.substring(0, 60) || ''}</small>
+                        </div>
+                    `).join('<hr>') : '<div class="no-data">暂无Token</div>'}
+                </div>
+                ${allTokens.length > 0 ? '<button class="copy-btn" data-action="copy-tokens">复制所有Token</button><button class="copy-btn" data-action="copy-all-headers">复制所有Headers</button>' : ''}
             </div>
         `;
 
@@ -714,9 +810,9 @@
                 <div class="info-content">
                     ${capturedRequests.length > 0 ? capturedRequests.slice(-5).map(req => `
                         <div style="margin-bottom: 8px;">
-                            <span class="${req.isRefresh ? 'refresh-highlight' : ''}" style="display: inline-block; padding: 2px 6px; border-radius: 3px;">
+                            <span class="${req.isCreation ? 'creation-highlight' : req.isRefresh ? 'refresh-highlight' : ''}" style="display: inline-block; padding: 2px 6px; border-radius: 3px;">
                                 <span class="method-${req.method.toLowerCase()}">${req.method}</span>
-                                ${req.isRefresh ? '🔄' : ''} ${req.url.split('/').pop()}
+                                ${req.isCreation ? '🆕' : req.isRefresh ? '🔄' : ''} ${req.url.split('/').pop()}
                             </span><br>
                             <small>${req.url}</small>
                         </div>
@@ -779,11 +875,11 @@
     const toggleBtn = document.createElement('button');
     toggleBtn.className = 'toggle-btn';
     toggleBtn.innerHTML = '🎨';
-    toggleBtn.title = 'MindVideo API提取器 v2.5.1 - Refresh接口Token重点监控';
+    toggleBtn.title = 'MindVideo API提取器 v2.5.2 - Creation/Refresh接口Token重点监控';
     toggleBtn.onclick = createPanel;
     toggleBtn.addEventListener('touchstart', createPanel, { passive: false });
     document.body.appendChild(toggleBtn);
 
-    console.log('🎨 MindVideo API提取器 v2.5.1 已加载 - Refresh接口Token重点提取 + 移动端复制增强');
-    window.mindvideoDebug = { update: updatePanel, copy: copyToClipboard, tokens: () => refreshTokens };
+    console.log('🎨 MindVideo API提取器 v2.5.2 已加载 - Creation/Refresh接口Token重点提取 + 完整Headers捕获');
+    window.mindvideoDebug = { update: updatePanel, copy: copyToClipboard, tokens: () => ({creation: creationTokens, refresh: refreshTokens, all: capturedTokens}) };
 })();
