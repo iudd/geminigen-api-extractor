@@ -1,5 +1,11 @@
 {
   "name": "mindvideo-2api-worker",
+  "main": "src/index.ts",
   "compatibility_date": "2025-11-22",
-  "main": "src/index.ts"
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "AUTH_TOKENS": ["your_token_here"]
+  }
 }
