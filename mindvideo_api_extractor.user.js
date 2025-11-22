@@ -2,7 +2,7 @@
 // @name         MindVideo API Extractor
 // @namespace    http://tampermonkey.net/
 // @version      2.5.0
-// @description  Extract API information and token from mindvideo.ai for curl/API usage - Mobile Copy Fixed
+// @description  Extract API information and token from mindvideo.ai refresh API - Mobile Enhanced + Refresh Focus
 // @author       iudd
 // @match        https://www.mindvideo.ai/*
 // @match        https://mindvideo.ai/*
@@ -15,7 +15,7 @@
 (function() {
     'use strict';
 
-    // 添加样式 - 增加移动端复制提示
+    // 添加样式
     GM_addStyle(`
         .mindvideo-panel {
             position: fixed;
@@ -79,20 +79,26 @@
             background: #4CAF50;
             color: white;
             border: none;
-            padding: 6px 12px;
+            padding: 8px 12px;
             border-radius: 4px;
             cursor: pointer;
             margin: 5px 5px 5px 0;
-            font-size: 11px;
+            font-size: 12px;
             font-weight: bold;
             transition: all 0.2s;
+            min-height: 35px;
         }
         .copy-btn:hover {
             background: #45a049;
         }
         .copy-btn.copying {
             background: #ff9800;
-            color: black;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
         }
         .clear-btn {
             background: #f44336;
@@ -110,15 +116,15 @@
             position: fixed;
             top: 20px;
             left: 20px;
-            width: 55px;
-            height: 55px;
+            width: 60px;
+            height: 60px;
             background: linear-gradient(135deg, #4CAF50, #45a049);
             color: white;
             border: none;
             border-radius: 50%;
             cursor: pointer;
             z-index: 10001;
-            font-size: 24px;
+            font-size: 26px;
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
             transition: all 0.3s;
         }
@@ -130,15 +136,33 @@
             color: white;
             border: none;
             border-radius: 50%;
-            width: 24px;
-            height: 24px;
+            width: 26px;
+            height: 26px;
             cursor: pointer;
-            font-size: 14px;
+            font-size: 16px;
             line-height: 1;
             font-weight: bold;
         }
         .close-btn:hover {
             background: #ff2222;
+        }
+        .notification {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            background: #4CAF50;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            z-index: 10002;
+            font-weight: bold;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            font-size: 14px;
+            max-width: 320px;
+            line-height: 1.4;
+        }
+        .notification.error {
+            background: #f44336;
         }
         .cleared-state {
             color: #ff9800;
@@ -170,21 +194,39 @@
             color: #ffb74d;
             font-weight: bold;
         }
-        .copy-result {
-            background: rgba(0, 255, 0, 0.1);
-            border: 2px solid #4CAF50;
-            padding: 10px;
-            border-radius: 6px;
-            margin-top: 10px;
+        .refresh-highlight {
+            background: rgba(33, 150, 243, 0.2);
+            border-left: 3px solid #2196F3;
+            padding: 8px;
+            margin: 5px 0;
+        }
+        .copy-display {
+            position: fixed;
+            top: 120px;
+            left: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.95);
+            color: #4CAF50;
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 10003;
             font-family: monospace;
             font-size: 12px;
             word-break: break-all;
-            max-height: 150px;
+            max-height: 200px;
             overflow-y: auto;
+            border: 2px solid #4CAF50;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            display: none;
         }
-        .copy-result.error {
-            background: rgba(255, 0, 0, 0.1);
-            border-color: #f44336;
+        .copy-display.show {
+            display: block;
+        }
+        .copy-display::before {
+            content: "📋 长按下方内容全选复制：";
+            display: block;
+            margin-bottom: 10px;
+            font-weight: bold;
         }
     `);
 
@@ -192,11 +234,12 @@
     let currentPanel = null;
     let capturedRequests = [];
     let capturedTokens = [];
+    let refreshTokens = []; // 专门存储refresh接口的Token
     let originalFetch = null;
     let originalXHR = null;
     let isInterceptionActive = false;
     let isCleared = false;
-    let copyResultDiv = null; // 新增：复制结果显示区域
+    let copyDisplay = null; // 复制显示区域
 
     // 提取页面信息
     function extractPageInfo() {
@@ -262,98 +305,94 @@
         return tokens;
     }
 
-    // 移动端优化复制功能 - 优先显示内容让用户手动复制
-    async function copyToClipboard(text, btn = null) {
-        console.log('🔄 复制数据长度:', text.length, '预览:', text.substring(0, 50) + '...');
+    // 超级增强复制功能 - 移动端终极兼容
+    async function copyToClipboard(text, btn = null, description = '数据') {
+        console.log(`🔄 复制${description}:`, text.substring(0, 100) + '...');
 
-        // 创建复制结果显示区域
-        if (!copyResultDiv) {
-            copyResultDiv = document.createElement('div');
-            copyResultDiv.className = 'copy-result';
-            copyResultDiv.style.cssText = `
-                position: fixed;
-                top: 60px;
-                left: 20px;
-                right: 20px;
-                background: rgba(0, 0, 0, 0.9);
-                color: #4CAF50;
-                padding: 15px;
-                border-radius: 8px;
-                z-index: 10003;
-                font-family: monospace;
-                font-size: 12px;
-                word-break: break-all;
-                max-height: 200px;
-                overflow-y: auto;
-                border: 2px solid #4CAF50;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-                display: none;
-            `;
-            document.body.appendChild(copyResultDiv);
+        // 创建复制显示区域（如果不存在）
+        if (!copyDisplay) {
+            copyDisplay = document.createElement('div');
+            copyDisplay.className = 'copy-display';
+            document.body.appendChild(copyDisplay);
         }
 
-        // 显示复制内容
-        copyResultDiv.textContent = `📋 复制内容 (长按下方区域全选复制):\n\n${text}`;
-        copyResultDiv.style.display = 'block';
+        // 显示复制内容（无论是否复制成功，都显示让用户手动复制）
+        copyDisplay.textContent = text;
+        copyDisplay.classList.add('show');
 
         // 自动隐藏
         setTimeout(() => {
-            if (copyResultDiv) copyResultDiv.style.display = 'none';
-        }, 10000);
+            if (copyDisplay) copyDisplay.classList.remove('show');
+        }, 15000);
 
-        // 方法1: 尝试GM_setClipboard (Tampermonkey)
+        // 尝试各种复制方法
+        let copied = false;
+
+        // 方法1: GM_setClipboard (Tampermonkey最可靠)
         if (typeof GM_setClipboard === 'function') {
             try {
                 GM_setClipboard(text);
-                showNotification('✅ GM_setClipboard成功！也可手动长按上方绿色区域复制');
+                showNotification(`✅ GM_setClipboard成功！\n上方绿色区域也已显示内容`);
                 if (btn) btn.textContent = '已复制 ✓';
-                return true;
+                copied = true;
             } catch (e) {
                 console.log('GM_setClipboard失败:', e);
             }
         }
 
-        // 方法2: 尝试navigator.clipboard
-        if (navigator.clipboard && navigator.clipboard.writeText) {
+        // 方法2: navigator.clipboard
+        if (!copied && navigator.clipboard && navigator.clipboard.writeText) {
             try {
                 await navigator.clipboard.writeText(text);
-                showNotification('✅ Clipboard API成功！也可手动长按上方绿色区域复制');
+                showNotification(`✅ Clipboard API成功！\n上方绿色区域也已显示内容`);
                 if (btn) btn.textContent = '已复制 ✓';
-                return true;
+                copied = true;
             } catch (e) {
                 console.log('Clipboard API失败:', e);
             }
         }
 
-        // 方法3: textarea + execCommand (最后的尝试)
-        try {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.left = '-9999px';
-            ta.style.top = '-9999px';
-            ta.style.opacity = 0;
-            ta.style.width = '1px';
-            ta.style.height = '1px';
-            document.body.appendChild(ta);
-            ta.focus();
-            ta.select();
-            ta.setSelectionRange(0, 99999);
-            const success = document.execCommand('copy');
-            document.body.removeChild(ta);
-            if (success) {
-                showNotification('✅ execCommand成功！也可手动长按上方绿色区域复制');
-                if (btn) btn.textContent = '已复制 ✓';
-                return true;
+        // 方法3: textarea + execCommand
+        if (!copied) {
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.left = '-999999px';
+                ta.style.top = '-999999px';
+                ta.style.opacity = '0';
+                ta.style.width = '1px';
+                ta.style.height = '1px';
+                ta.style.padding = '0';
+                ta.style.border = 'none';
+                ta.style.outline = 'none';
+                ta.style.resize = 'none';
+                document.body.appendChild(ta);
+
+                ta.focus();
+                ta.select();
+                ta.setSelectionRange(0, text.length);
+
+                const successful = document.execCommand('copy');
+                document.body.removeChild(ta);
+
+                if (successful) {
+                    showNotification(`✅ 兼容模式成功！\n上方绿色区域也已显示内容`);
+                    if (btn) btn.textContent = '已复制 ✓';
+                    copied = true;
+                }
+            } catch (e) {
+                console.log('execCommand失败:', e);
             }
-        } catch (e) {
-            console.log('execCommand失败:', e);
         }
 
-        // 所有方法都失败 - 只显示绿色区域让用户手动复制
-        showNotification('📱 请长按上方绿色区域全选复制！');
-        if (btn) btn.textContent = '请手动复制';
-        return false;
+        // 如果所有方法都失败，只显示绿色区域
+        if (!copied) {
+            showNotification('📱 请长按上方绿色区域全选复制！');
+            if (btn) btn.textContent = '请手动复制';
+        }
+
+        return copied;
     }
 
     // 通知
@@ -361,28 +400,15 @@
         const div = document.createElement('div');
         div.textContent = msg;
         div.className = `notification ${isError ? 'error' : ''}`;
-        div.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: ${isError ? '#f44336' : '#4CAF50'};
-            color: white;
-            padding: 12px 20px;
-            border-radius: 6px;
-            z-index: 10002;
-            font-weight: bold;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            font-size: 14px;
-            max-width: 300px;
-        `;
         document.body.appendChild(div);
-        setTimeout(() => div.remove(), 3000);
+        setTimeout(() => div.remove(), 4000);
     }
 
-    // 拦截网络请求
+    // 拦截网络请求 - 专门针对refresh接口
     function startInterception() {
         if (isInterceptionActive) return;
         isInterceptionActive = true;
+        console.log('🕸️ 开始拦截MindVideo请求，重点关注refresh接口...');
 
         originalFetch = window.fetch;
         window.fetch = async function(...args) {
@@ -397,15 +423,18 @@
                 else if (options.body.text) bodyStr = await options.body.text();
             }
 
+            // 重点捕获MindVideo相关请求，特别是refresh
             if (urlStr.includes('mindvideo.ai') || urlStr.includes('mindvideo')) {
                 const requestInfo = {
                     method,
                     url: urlStr,
                     headers: { ...headers },
                     body: bodyStr,
-                    timestamp: new Date().toLocaleString()
+                    timestamp: new Date().toLocaleString(),
+                    isRefresh: urlStr.includes('refresh') || urlStr.includes('creations')
                 };
 
+                // 增强Token捕获 - 所有可能的header
                 Object.keys(headers).forEach(key => {
                     const value = headers[key];
                     if (value && (
@@ -413,17 +442,28 @@
                         key.toLowerCase().includes('token') ||
                         key.toLowerCase().includes('auth') ||
                         key.toLowerCase().includes('session') ||
+                        key.toLowerCase().includes('x-auth') ||
                         value.includes('eyJ') ||
-                        value.match(/[!#\$%^&*]{2,}/)
+                        value.match(/[!#\$%^&*]{2,}/) ||
+                        value.length > 20 // 长字符串可能是Token
                     )) {
-                        capturedTokens.push({
+                        const tokenInfo = {
                             source: 'Header',
                             key,
                             value: value.substring(0, 50) + '...',
                             full: value,
                             url: urlStr,
+                            isRefresh: requestInfo.isRefresh,
                             timestamp: new Date().toLocaleString()
-                        });
+                        };
+
+                        capturedTokens.push(tokenInfo);
+
+                        // 专门存储refresh接口的Token
+                        if (requestInfo.isRefresh) {
+                            refreshTokens.push(tokenInfo);
+                            console.log('🎯 捕获到Refresh接口Token:', value.substring(0, 20) + '...');
+                        }
                     }
                 });
 
@@ -433,6 +473,74 @@
 
             return originalFetch.apply(this, args);
         };
+
+        // XHR拦截 - 也重点关注refresh
+        if (window.XMLHttpRequest) {
+            originalXHR = window.XMLHttpRequest;
+            window.XMLHttpRequest = function() {
+                const xhr = new originalXHR();
+                let requestInfo = {};
+
+                const originalOpen = xhr.open;
+                xhr.open = function(method, url, ...args) {
+                    if (url && (url.includes('mindvideo') || url.includes('refresh'))) {
+                        requestInfo = {
+                            method,
+                            url,
+                            headers: {},
+                            timestamp: new Date().toLocaleString(),
+                            isRefresh: url.includes('refresh') || url.includes('creations')
+                        };
+                    }
+                    originalOpen.apply(this, arguments);
+                };
+
+                const originalSetHeader = xhr.setRequestHeader;
+                xhr.setRequestHeader = function(key, value) {
+                    if (requestInfo.url) {
+                        requestInfo.headers[key] = value;
+
+                        // XHR中也捕获Token
+                        if (value && (
+                            value.includes('Bearer ') ||
+                            key.toLowerCase().includes('token') ||
+                            key.toLowerCase().includes('auth') ||
+                            value.includes('eyJ') ||
+                            value.match(/[!#\$%^&*]{2,}/)
+                        )) {
+                            const tokenInfo = {
+                                source: 'XHR Header',
+                                key,
+                                value: value.substring(0, 50) + '...',
+                                full: value,
+                                url: requestInfo.url,
+                                isRefresh: requestInfo.isRefresh,
+                                timestamp: new Date().toLocaleString()
+                            };
+
+                            capturedTokens.push(tokenInfo);
+                            if (requestInfo.isRefresh) {
+                                refreshTokens.push(tokenInfo);
+                                console.log('🎯 XHR捕获到Refresh接口Token:', value.substring(0, 20) + '...');
+                            }
+                        }
+                    }
+                    originalSetHeader.call(this, key, value);
+                };
+
+                const originalSend = xhr.send;
+                xhr.send = function(body) {
+                    if (requestInfo.url) {
+                        requestInfo.body = body;
+                        capturedRequests.push(requestInfo);
+                        updatePanel();
+                    }
+                    originalSend.call(this, body);
+                };
+
+                return xhr;
+            };
+        }
     }
 
     // 停止拦截
@@ -440,6 +548,18 @@
         if (!isInterceptionActive) return;
         isInterceptionActive = false;
         if (originalFetch) window.fetch = originalFetch;
+        if (originalXHR) window.XMLHttpRequest = originalXHR;
+        console.log('🛑 拦截已停止');
+    }
+
+    // 生成Curl
+    function generateCurl(request) {
+        let curl = `curl -X ${request.method} "${request.url}"`;
+        Object.entries(request.headers || {}).forEach(([key, value]) => {
+            curl += ` \\\n  -H "${key}: ${value}"`;
+        });
+        if (request.body) curl += ` \\\n  -d '${request.body.replace(/'/g, "'\\''")}'`;
+        return curl;
     }
 
     // 按钮事件处理
@@ -454,30 +574,41 @@
         console.log('按钮点击:', action);
 
         let text = '';
+        let description = '数据';
 
         switch (action) {
             case 'copy-page':
                 text = JSON.stringify(extractPageInfo(), null, 2);
-                copyToClipboard(text, btn);
+                description = '页面信息';
+                copyToClipboard(text, btn, description);
                 break;
             case 'copy-tokens':
-                text = capturedTokens.map(t => `${t.source}.${t.key || 'header'}:\n${t.full}\n`).join('\n');
-                copyToClipboard(text, btn);
+                text = capturedTokens.map(t => `${t.source}.${t.key}:\n${t.full}\n`).join('\n\n');
+                description = '所有Token';
+                copyToClipboard(text, btn, description);
+                break;
+            case 'copy-refresh-tokens':
+                text = refreshTokens.map(t => `${t.source}.${t.key}:\n${t.full}\n`).join('\n\n');
+                description = 'Refresh Token';
+                copyToClipboard(text, btn, description);
                 break;
             case 'copy-requests':
                 text = JSON.stringify(capturedRequests.slice(-5), null, 2);
-                copyToClipboard(text, btn);
+                description = '请求详情';
+                copyToClipboard(text, btn, description);
                 break;
             case 'copy-images':
                 text = extractImageLinks().join('\n');
-                copyToClipboard(text, btn);
+                description = '图片链接';
+                copyToClipboard(text, btn, description);
                 break;
             case 'clear':
                 capturedRequests = [];
                 capturedTokens = [];
+                refreshTokens = [];
                 isCleared = true;
                 console.log('清空成功');
-                showNotification('✅ 已清空数据！重新生成查看新数据');
+                showNotification('✅ 已清空所有数据！\n重新生成查看新数据');
                 updatePanel();
                 btn.classList.remove('copying');
                 break;
@@ -521,17 +652,19 @@
             </div>
         `;
 
+        // 重点显示Refresh Token
         html += `
             <div class="panel-section storage-section">
-                <h4>🔑 Token & Keys (${allTokens.length})</h4>
+                <h4>🔑 Refresh Token (${refreshTokens.length}) - 重点关注</h4>
                 <div class="info-content">
-                    ${allTokens.length > 0 ? allTokens.slice(-10).map(t => `
-                        <div style="margin-bottom: 8px;">
+                    ${refreshTokens.length > 0 ? refreshTokens.slice(-8).map(t => `
+                        <div class="refresh-highlight">
                             <strong>${t.source}:</strong> <span class="token-highlight">${t.value}</span><br>
-                            <small>${t.key || 'N/A'} | ${t.url?.substring(0, 60) || ''}</small>
+                            <small>🔄 Refresh接口 | ${t.key} | ${t.timestamp}</small>
                         </div>
-                    `).join('') : '<div class="no-data">暂无Token - 生成图片后自动捕获</div>'}
+                    `).join('') : '<div class="no-data">暂无Refresh Token<br>请点击"生成"触发refresh/creations接口</div>'}
                 </div>
+                ${refreshTokens.length > 0 ? '<button class="copy-btn" data-action="copy-refresh-tokens">复制Refresh Token</button>' : ''}
                 ${allTokens.length > 0 ? '<button class="copy-btn" data-action="copy-tokens">复制所有Token</button>' : ''}
             </div>
         `;
@@ -542,7 +675,10 @@
                 <div class="info-content">
                     ${capturedRequests.length > 0 ? capturedRequests.slice(-5).map(req => `
                         <div style="margin-bottom: 8px;">
-                            <span class="method-${req.method.toLowerCase()}">${req.method}</span> ${req.url.split('/').pop()}<br>
+                            <span class="${req.isRefresh ? 'refresh-highlight' : ''}" style="display: inline-block; padding: 2px 6px; border-radius: 3px;">
+                                <span class="method-${req.method.toLowerCase()}">${req.method}</span>
+                                ${req.isRefresh ? '🔄' : ''} ${req.url.split('/').pop()}
+                            </span><br>
                             <small>${req.url}</small>
                         </div>
                     `).join('') : '<div class="no-data">暂无请求 - 点击生成</div>'}
@@ -555,10 +691,7 @@
             html += `
                 <div class="panel-section">
                     <h4>🔧 Curl命令 (最新3个)</h4>
-                    ${capturedRequests.slice(-3).map(req => {
-                        const curl = generateCurl(req);
-                        return `<div class="info-content"><pre>${curl}</pre></div>`;
-                    }).join('')}
+                    ${capturedRequests.slice(-3).map(req => `<div class="info-content"><pre>${generateCurl(req)}</pre></div>`).join('')}
                 </div>
             `;
         }
@@ -607,11 +740,11 @@
     const toggleBtn = document.createElement('button');
     toggleBtn.className = 'toggle-btn';
     toggleBtn.innerHTML = '🎨';
-    toggleBtn.title = 'MindVideo API提取器 v2.5 - 移动端复制优化';
+    toggleBtn.title = 'MindVideo API提取器 v2.5 - Refresh接口重点监控';
     toggleBtn.onclick = createPanel;
     toggleBtn.addEventListener('touchstart', createPanel, { passive: false });
     document.body.appendChild(toggleBtn);
 
-    console.log('🎨 MindVideo API提取器 v2.5 已加载 - 移动端复制优化 + 绿色区域显示');
-    window.mindvideoDebug = { update: updatePanel, copy: copyToClipboard };
+    console.log('🎨 MindVideo API提取器 v2.5 已加载 - Refresh接口Token重点提取 + 移动端复制增强');
+    window.mindvideoDebug = { update: updatePanel, copy: copyToClipboard, tokens: () => refreshTokens };
 })();
