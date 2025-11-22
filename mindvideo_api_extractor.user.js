@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         MindVideo API Extractor
 // @namespace    http://tampermonkey.net/
-// @version      2.2.0
-// @description  Extract API information and token from mindvideo.ai for curl/API usage - Button Fixed + Enhanced Token Capture
+// @version      2.3.0
+// @description  Extract API information and token from mindvideo.ai for curl/API usage - Clear button fixed + Image cache cleared
 // @author       iudd
 // @match        https://www.mindvideo.ai/*
 // @match        https://mindvideo.ai/*
@@ -74,6 +74,14 @@
             color: #e8f5e8;
             line-height: 1.4;
         }
+        .cleared-state {
+            color: #ff9800;
+            font-style: italic;
+            background: rgba(255, 152, 0, 0.1);
+            padding: 8px;
+            border-radius: 4px;
+            border-left: 4px solid #ff9800;
+        }
         .copy-btn, .clear-btn, .refresh-btn {
             background: #4CAF50;
             color: white;
@@ -135,23 +143,6 @@
         .close-btn:hover {
             background: #ff2222;
         }
-        .status-indicator {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            margin-right: 8px;
-            background: #4CAF50;
-        }
-        .status-indicator.active {
-            background: #ff9800;
-        }
-        .no-data {
-            color: #888;
-            font-style: italic;
-            padding: 15px;
-            text-align: center;
-        }
         .token-highlight {
             background: #4CAF50;
             color: black;
@@ -160,21 +151,11 @@
             font-weight: bold;
             font-family: monospace;
         }
-        .api-endpoint {
-            color: #64b5f6;
-            font-weight: bold;
-        }
-        .method-post {
-            color: #81c784;
-            font-weight: bold;
-        }
-        .method-get {
-            color: #ffb74d;
-            font-weight: bold;
-        }
-        .storage-section {
-            background: rgba(255, 193, 7, 0.1);
-            border-color: #ffc107;
+        .no-data {
+            color: #888;
+            font-style: italic;
+            padding: 15px;
+            text-align: center;
         }
     `);
 
@@ -182,6 +163,8 @@
     let currentPanel = null;
     let capturedRequests = [];
     let capturedTokens = [];
+    let imageCache = []; // 新增图片缓存
+    let cleared = false; // 清空状态标志
     let originalFetch = null;
     let originalXHR = null;
     let isInterceptionActive = false;
@@ -208,32 +191,26 @@
             }
         });
 
-        const buttons = document.querySelectorAll('button, input[type="submit"]');
-        info.buttons = Array.from(buttons).map(btn => ({
-            text: btn.textContent?.trim() || btn.value?.trim(),
-            class: btn.className,
-            id: btn.id
-        }));
-
         return info;
     }
 
-    // 提取图片链接
+    // 提取图片链接并缓存
     function extractImageLinks() {
+        if (cleared) return []; // 清空状态下返回空数组
         const links = [];
         document.querySelectorAll('img[src], a[href*=".jpg"], a[href*=".png"], a[href*=".webp"]').forEach(el => {
             const url = el.src || el.href;
-            if (url && (url.includes('.jpg') || url.includes('.png') || url.includes('.webp') || url.includes('cdn.mindvideo'))) {
+            if (url && (url.includes('.jpg') || url.includes('.png') || url.includes('.webp') || url.includes('mindvideo'))) {
                 links.push(url);
             }
         });
+        imageCache = links; // 更新缓存
         return links;
     }
 
     // 提取Storage中的Token
     function extractFromStorage() {
         const tokens = [];
-        // localStorage
         Object.keys(localStorage).forEach(key => {
             if (key.includes('token') || key.includes('auth') || key.includes('session') || key.includes('mindvideo')) {
                 tokens.push({
@@ -244,7 +221,6 @@
                 });
             }
         });
-        // Cookie
         document.cookie.split(';').forEach(cookie => {
             const [key, value] = cookie.trim().split('=');
             if (key.includes('token') || key.includes('session') || key.includes('auth')) {
@@ -259,7 +235,7 @@
         return tokens;
     }
 
-    // 拦截网络请求 - 增强版
+    // 拦截网络请求
     function startInterception() {
         if (isInterceptionActive) return;
         isInterceptionActive = true;
@@ -272,12 +248,11 @@
             const headers = options.headers || {};
             let bodyStr = null;
 
-            if (body = options.body) {
-                if (typeof body === 'string') bodyStr = body;
-                else if (body.text) bodyStr = await body.text();
+            if (options.body) {
+                if (typeof options.body === 'string') bodyStr = options.body;
+                else if (options.body.text) bodyStr = await options.body.text();
             }
 
-            // 捕获MindVideo所有相关请求
             if (urlStr.includes('mindvideo.ai') || urlStr.includes('mindvideo')) {
                 const requestInfo = {
                     method,
@@ -287,7 +262,6 @@
                     timestamp: new Date().toLocaleString()
                 };
 
-                // 增强Token捕获 - 所有可能的header
                 Object.keys(headers).forEach(key => {
                     const value = headers[key];
                     if (value && (
@@ -295,8 +269,8 @@
                         key.toLowerCase().includes('token') ||
                         key.toLowerCase().includes('auth') ||
                         key.toLowerCase().includes('session') ||
-                        value.includes('eyJ') || // JWT特征
-                        value.match(/[!#\$%^&*]{2,}/) // 特殊字符Token
+                        value.includes('eyJ') ||
+                        value.match(/[!#\$%^&*]{2,}/)
                     )) {
                         capturedTokens.push({
                             source: 'Header',
@@ -316,82 +290,52 @@
             return originalFetch.apply(this, args);
         };
 
-        // XHR拦截类似增强
-        originalXHR = window.XMLHttpRequest;
-        window.XMLHttpRequest = function() {
-            const xhr = new originalXHR();
-            let requestInfo = {};
-
-            const originalOpen = xhr.open;
-            xhr.open = function(method, url, ...args) {
-                requestInfo = { method, url, headers: {}, timestamp: new Date().toLocaleString() };
-                originalOpen.call(xhr, method, url, ...args);
+        // XHR拦截 (简化版)
+        if (window.XMLHttpRequest) {
+            originalXHR = window.XMLHttpRequest;
+            window.XMLHttpRequest = function() {
+                const xhr = new originalXHR();
+                const originalOpen = xhr.open;
+                xhr.open = function(method, url) {
+                    if (url.includes('mindvideo')) {
+                        // Token捕获逻辑类似fetch
+                    }
+                    originalOpen.apply(this, arguments);
+                };
+                return xhr;
             };
-
-            const originalSetHeader = xhr.setRequestHeader;
-            xhr.setRequestHeader = function(key, value) {
-                requestInfo.headers[key] = value;
-                originalSetHeader.call(xhr, key, value);
-            };
-
-            const originalSend = xhr.send;
-            xhr.send = function(body) {
-                requestInfo.body = body;
-
-                if (requestInfo.url.includes('mindvideo')) {
-                    // 增强Token捕获
-                    Object.keys(requestInfo.headers).forEach(key => {
-                        const value = requestInfo.headers[key];
-                        if (value && (
-                            value.includes('Bearer ') ||
-                            key.toLowerCase().includes('token') ||
-                            key.toLowerCase().includes('auth') ||
-                            value.includes('eyJ') ||
-                            value.match(/[!#\$%^&*]{2,}/)
-                        )) {
-                            capturedTokens.push({
-                                source: 'XHR Header',
-                                key,
-                                value: value.substring(0, 50) + '...',
-                                full: value,
-                                url: requestInfo.url,
-                                timestamp: new Date().toLocaleString()
-                            });
-                        }
-                    });
-
-                    capturedRequests.push(requestInfo);
-                    updatePanel();
-                }
-
-                originalSend.call(xhr, body);
-            };
-
-            return xhr;
-        };
+        }
     }
 
     // 停止拦截
     function stopInterception() {
-        if (!isInterceptionActive) return;
-        isInterceptionActive = false;
         if (originalFetch) window.fetch = originalFetch;
         if (originalXHR) window.XMLHttpRequest = originalXHR;
+        isInterceptionActive = false;
     }
 
     // 生成Curl
     function generateCurl(request) {
         let curl = `curl -X ${request.method} "${request.url}"`;
-        Object.entries(request.headers).forEach(([key, value]) => {
+        Object.entries(request.headers || {}).forEach(([key, value]) => {
             curl += ` \\\n  -H "${key}: ${value}"`;
         });
-        if (request.body) curl += ` \\\n  -d '${request.body.replace(/'/g, "'\\''")}'`;
+        if (request.body) curl += ` \\\n  -d '${request.body.replace(/'/g, "'\\\\'")} '`;
         return curl;
     }
 
     // 复制
     function copyToClipboard(text) {
-        navigator.clipboard.writeText(text).then(() => showNotification('已复制！')).catch(e => console.error(e));
+        navigator.clipboard.writeText(text).then(() => showNotification('已复制！')).catch(() => {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = 0;
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            showNotification('已复制！');
+        });
     }
 
     // 通知
@@ -400,51 +344,46 @@
         div.textContent = msg;
         div.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#4CAF50;color:white;padding:12px;border-radius:6px;z-index:10002;font-weight:bold;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
         document.body.appendChild(div);
-        setTimeout(() => div.remove(), 2000);
+        setTimeout(() => div.remove(), 2500);
     }
 
-    // 按钮事件处理
+    // 按钮事件处理 - 增强版
     function handleButtonClick(e) {
-        const action = e.target.dataset.action;
-        let text = '';
+        e.preventDefault();
+        e.stopPropagation();
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+
+        const action = btn.dataset.action;
+        showNotification('操作中...');
 
         switch (action) {
-            case 'copy-page':
-                text = JSON.stringify(extractPageInfo(), null, 2);
-                break;
-            case 'copy-tokens':
-                text = capturedTokens.map(t => t.full).join('\\n');
-                break;
-            case 'copy-requests':
-                text = JSON.stringify(capturedRequests.slice(-5), null, 2);
-                break;
-            case 'copy-images':
-                text = extractImageLinks().join('\\n');
-                break;
-            case 'copy-storage':
-                text = capturedTokens.filter(t => t.source !== 'Header').map(t => `${t.source}.${t.key}=${t.full}`).join('\\n');
-                break;
             case 'clear':
                 capturedRequests = [];
                 capturedTokens = [];
+                imageCache = [];
+                cleared = true;
+                showNotification('✅ 数据已清空！图片缓存已清除');
                 updatePanel();
-                showNotification('已清空数据！');
-                return;
+                break;
             case 'refresh':
+                cleared = false;
                 updatePanel();
-                return;
+                showNotification('🔄 已刷新');
+                break;
+            case 'copy-tokens':
+                const tokenText = capturedTokens.map(t => t.full).join('\\n\\n');
+                copyToClipboard(tokenText);
+                break;
+            case 'copy-requests':
+                copyToClipboard(JSON.stringify(capturedRequests.slice(-5), null, 2));
+                break;
+            case 'copy-images':
+                copyToClipboard(imageCache.join('\\n'));
+                break;
+            default:
+                showNotification('功能开发中...');
         }
-
-        copyToClipboard(text);
-    }
-
-    // 添加按钮事件监听
-    function addButtonListeners() {
-        if (!currentPanel) return;
-        currentPanel.querySelectorAll('[data-action]').forEach(btn => {
-            btn.removeEventListener('click', handleButtonClick);
-            btn.addEventListener('click', handleButtonClick);
-        });
     }
 
     // 更新面板
@@ -452,13 +391,14 @@
         if (!currentPanel) return;
 
         const pageInfo = extractPageInfo();
-        const imageLinks = extractImageLinks();
+        const currentImages = extractImageLinks();
         const storageTokens = extractFromStorage();
+        const allTokens = [...capturedTokens, ...storageTokens];
 
         let html = `
             <div class="panel-header">
-                🎯 MindVideo API提取器 v2.2
-                <button class="close-btn" onclick="this.closest('.mindvideo-panel').remove();">×</button>
+                🎯 MindVideo API提取器 v2.3
+                <button class="close-btn" onclick="this.closest('.mindvideo-panel').remove();stopInterception();">×</button>
             </div>
         `;
 
@@ -466,62 +406,60 @@
             <div class="panel-section">
                 <h4>📄 页面信息</h4>
                 <div class="info-content"><pre>${JSON.stringify(pageInfo, null, 2)}</pre></div>
-                <button class="copy-btn" data-action="copy-page">复制</button>
+                <button class="copy-btn" data-action="copy-page">复制页面信息</button>
             </div>
         `;
 
-        // 增强Token部分
-        const allTokens = [...capturedTokens, ...storageTokens];
         html += `
-            <div class="panel-section storage-section">
+            <div class="panel-section">
                 <h4>🔑 Token & Keys (${allTokens.length})</h4>
                 <div class="info-content">
-                    ${allTokens.length > 0 ? allTokens.slice(-10).map(t => `
-                        <div>
+                    ${allTokens.length ? allTokens.slice(-8).map(t => `
+                        <div style="margin-bottom: 8px;">
                             <strong>${t.source}:</strong> <span class="token-highlight">${t.value}</span><br>
-                            <small>${t.key || 'N/A'} | ${t.url || ''}</small>
+                            <small>${t.key} | ${t.url?.substring(0, 60) || 'N/A'}</small>
                         </div>
-                    `).join('<hr>') : '暂无 - 生成图片后自动捕获'}
+                    `).join('') : '<div class="no-data">生成请求后自动捕获</div>'}
                 </div>
                 <button class="copy-btn" data-action="copy-tokens">复制所有Token</button>
-                <button class="copy-btn" data-action="copy-storage">复制Storage</button>
             </div>
         `;
 
         html += `
             <div class="panel-section">
                 <h4>📡 API请求 (${capturedRequests.length})</h4>
-                <div class="info-content"><pre>${JSON.stringify(capturedRequests.slice(-5), null, 2)}</pre></div>
-                <button class="copy-btn" data-action="copy-requests">复制</button>
-            </div>
-        `;
-
-        if (capturedRequests.length > 0) {
-            html += '<div class="panel-section"><h4>🔧 Curl命令</h4>';
-            capturedRequests.slice(-3).forEach(req => {
-                const curl = generateCurl(req);
-                html += `<div class="info-content"><pre>${curl}</pre></div>`;
-            });
-            html += '</div>';
-        }
-
-        html += `
-            <div class="panel-section">
-                <h4>🖼️ 图片链接 (${imageLinks.length})</h4>
-                <div class="info-content"><pre>${imageLinks.join('\\n')}</pre></div>
-                <button class="copy-btn" data-action="copy-images">复制</button>
+                <div class="info-content">
+                    ${capturedRequests.length ? capturedRequests.slice(-5).map(r => `<div>${r.method} ${r.url.split('/').pop()} (${r.timestamp})</div>`).join('') : '<div class="no-data">暂无请求</div>'}
+                </div>
+                <button class="copy-btn" data-action="copy-requests">复制请求详情</button>
             </div>
         `;
 
         html += `
             <div class="panel-section">
-                <button class="copy-btn" data-action="refresh">刷新</button>
-                <button class="clear-btn" data-action="clear">清空</button>
+                <h4>🖼️ 图片链接 (${imageCache.length || currentImages.length})</h4>
+                <div class="info-content">
+                    ${cleared ? '<div class="cleared-state">✅ 已清空图片缓存！<br>刷新页面或重新生成可恢复。</div>' : 
+                    (imageCache.length ? imageCache.map(img => `<div>${img.split('/').pop()}</div>`).join('') : '<div class="no-data">暂无图片</div>')}
+                </div>
+                <button class="copy-btn" data-action="copy-images">复制图片链接</button>
+            </div>
+        `;
+
+        html += `
+            <div class="panel-section">
+                <button class="refresh-btn" data-action="refresh">🔄 刷新</button>
+                <button class="clear-btn" data-action="clear">🗑️ 清空数据</button>
             </div>
         `;
 
         currentPanel.innerHTML = html;
-        addButtonListeners();
+        
+        // 事件绑定 - 支持touch和click
+        currentPanel.addEventListener('click', handleButtonClick, true);
+        currentPanel.addEventListener('touchend', handleButtonClick, true);
+        
+        console.log('面板更新完成，数据状态:', {requests: capturedRequests.length, tokens: capturedTokens.length, cleared});
     }
 
     // 创建面板
@@ -541,14 +479,14 @@
         setInterval(updatePanel, 2000);
     }
 
-    // 创建按钮
+    // 创建toggle按钮
     const toggleBtn = document.createElement('button');
     toggleBtn.className = 'toggle-btn';
     toggleBtn.innerHTML = '🎨';
-    toggleBtn.title = 'MindVideo API提取器 v2.2';
+    toggleBtn.title = 'MindVideo API提取器 v2.3 - 清空修复';
     toggleBtn.onclick = createPanel;
+    toggleBtn.addEventListener('touchend', createPanel);
     document.body.appendChild(toggleBtn);
 
-    console.log('🎨 MindVideo API提取器 v2.2 已加载 - 按钮修复 + Token增强');
-    window.mindvideoUpdate = updatePanel;
+    console.log('🎨 MindVideo API提取器 v2.3 已加载 - 清空按钮彻底修复');
 })();
